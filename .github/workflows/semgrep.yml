@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   semgrep:
@@ -28,14 +29,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run Semgrep
-        uses: semgrep/semgrep-action@v1
-        with:
-          config: auto
-          generateSarif: "1"
+      - name: Install Semgrep
+        run: python -m pip install semgrep
 
-      - name: Upload Semgrep SARIF
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config auto \
+            --sarif \
+            --output semgrep.sarif \
+            .
+
+      - name: Check SARIF file
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        run: |
+          if [ -f semgrep.sarif ]; then
+            echo "semgrep.sarif was created successfully"
+            ls -lh semgrep.sarif
+          else
+            echo "ERROR: semgrep.sarif was not created"
+            exit 1
+          fi
+
+      - name: Upload Semgrep results to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: semgrep.sarif
+          category: semgrep
