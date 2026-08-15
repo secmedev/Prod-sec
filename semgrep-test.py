@@ -1,65 +1,130 @@
-# semgrep-vulnerable-test.py
-# INTENTIONALLY VULNERABLE TEST CODE - DO NOT USE IN PRODUCTION
+# semgrep-secure-test.py
 
 import hashlib
 import os
 import pickle
 import sqlite3
 import subprocess
+from pathlib import Path
 
-# 1. OS Command Injection
+
+# 1. Command Injection
+# Avoid shell execution with untrusted input.
 def command_injection(user_input):
-    os.system(user_input)
+    allowed_commands = {
+        "status": ["echo", "status"],
+        "version": ["echo", "version"],
+    }
+
+    if user_input not in allowed_commands:
+        raise ValueError("Invalid command")
+
+    return subprocess.run(
+        allowed_commands[user_input],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 # 2. Shell Command Injection
+# Do not use shell=True with user-controlled input.
 def shell_injection(user_input):
-    subprocess.run(user_input, shell=True)
+    return subprocess.run(
+        ["echo", user_input],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 # 3. SQL Injection
+# Use parameterised SQL queries.
 def sql_injection(username):
     connection = sqlite3.connect("test.db")
-    query = "SELECT * FROM users WHERE username = '" + username + "'"
-    return connection.execute(query).fetchall()
+
+    query = "SELECT * FROM users WHERE username = ?"
+
+    try:
+        return connection.execute(query, (username,)).fetchall()
+    finally:
+        connection.close()
 
 
 # 4. Hardcoded Secret
-API_KEY = "TEST_API_KEY_123456789"
-DATABASE_PASSWORD = "TestPassword123!"
+# Read secrets from environment variables instead.
+API_KEY = os.environ.get("API_KEY")
+DATABASE_PASSWORD = os.environ.get("DATABASE_PASSWORD")
 
 
 # 5. Weak Hashing
-def weak_hash(password):
-    return hashlib.md5(password.encode()).hexdigest()
+# Use a password-hashing algorithm such as Argon2 or bcrypt.
+# Example using PBKDF2 from the Python standard library.
+def secure_password_hash(password, salt):
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        600_000,
+    ).hex()
 
 
 # 6. Insecure Deserialization
-def insecure_deserialization(data):
-    return pickle.loads(data)
+# Do not use pickle.loads() on untrusted data.
+# JSON is safer for data interchange.
+import json
+
+
+def secure_deserialization(data):
+    return json.loads(data)
 
 
 # 7. Path Traversal
+# Restrict access to a specific directory.
 def path_traversal(filename):
-    with open("/tmp/" + filename, "r") as file:
-        return file.read()
+    base_directory = Path("/tmp/safe-files").resolve()
+    requested_file = (base_directory / filename).resolve()
+
+    if base_directory not in requested_file.parents:
+        raise ValueError("Invalid file path")
+
+    return requested_file.read_text(encoding="utf-8")
 
 
 # 8. Code Execution with eval()
-def unsafe_eval(user_input):
-    return eval(user_input)
+# Do not evaluate user-controlled Python expressions.
+def safe_eval(user_input):
+    allowed_values = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+    }
+
+    if user_input not in allowed_values:
+        raise ValueError("Invalid value")
+
+    return allowed_values[user_input]
 
 
 # 9. Code Execution with exec()
-def unsafe_exec(user_input):
-    exec(user_input)
+# Avoid dynamic code execution entirely.
+def safe_exec(user_input):
+    allowed_actions = {
+        "start": "Application started",
+        "stop": "Application stopped",
+    }
+
+    if user_input not in allowed_actions:
+        raise ValueError("Invalid action")
+
+    return allowed_actions[user_input]
 
 
 # 10. Debug Mode
+# Debug mode should be disabled in production.
 def start_application(app):
-    app.run(debug=True)
+    app.run(debug=False)
 
 
-# Test calls
 if __name__ == "__main__":
-    print("Semgrep vulnerability test file")
+    print("Secure Semgrep test application")
