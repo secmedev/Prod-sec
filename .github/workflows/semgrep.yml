@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   semgrep:
@@ -24,20 +25,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Semgrep
-        run: python -m pip install semgrep
-
       - name: Run Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: auto
+
+      - name: Run Semgrep SARIF
         run: |
           semgrep scan \
             --config auto \
             --sarif \
-            --output semgrep.sarif \
+            --output "${{ github.workspace }}/semgrep.sarif" \
             .
+
+      - name: Verify SARIF file
+        run: |
+          echo "Workspace:"
+          pwd
+          echo "Files:"
+          ls -la
+          echo "SARIF:"
+          ls -lh "${{ github.workspace }}/semgrep.sarif"
 
       - name: Upload Semgrep results
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: semgrep.sarif
+          sarif_file: ${{ github.workspace }}/semgrep.sarif
           category: semgrep
