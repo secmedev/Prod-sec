@@ -36,9 +36,8 @@ jobs:
             -t security-test:${{ github.sha }} \
             .
 
-      # Generate SARIF for GitHub Security / Code Scanning
       - name: Run Trivy SARIF scan
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: security-test:${{ github.sha }}
           format: sarif
@@ -47,9 +46,8 @@ jobs:
           ignore-unfixed: false
           exit-code: 0
 
-      # Generate JSON for PR comment
       - name: Run Trivy JSON scan
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: security-test:${{ github.sha }}
           format: json
@@ -58,20 +56,15 @@ jobs:
           ignore-unfixed: false
           exit-code: 0
 
-      # Upload results to GitHub Security
-      - name: Upload Trivy results
+      - name: Upload Trivy results to GitHub Security
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{ github.workspace }}/trivy-results.sarif
           category: trivy-image
 
-      # Create PR comment
       - name: Create image scan PR comment
         if: always() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           python3 - <<'PY'
           import json
@@ -95,7 +88,6 @@ jobs:
                   })
 
           with open("trivy-comment.md", "w", encoding="utf-8") as out:
-
               out.write("## Trivy Container Image Scan\n\n")
 
               if not findings:
@@ -133,7 +125,6 @@ jobs:
 
           PY
 
-      # Add/update PR comment
       - name: Post image scan results to PR
         if: always() && github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@v2
@@ -142,10 +133,9 @@ jobs:
           recreate: true
           path: trivy-comment.md
 
-      # Fail PR when HIGH/CRITICAL vulnerabilities are found
       - name: Enforce image security
         if: always()
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: security-test:${{ github.sha }}
           format: table
