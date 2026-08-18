@@ -1,10 +1,9 @@
-name: Semgrep Security Scan
+name: Security Code Scan
 
 on:
   pull_request:
     branches:
       - main
-
   workflow_dispatch:
 
 permissions:
@@ -14,58 +13,40 @@ permissions:
 
 jobs:
   semgrep:
-    name: Semgrep Scan
+    name: Semgrep
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: read
-      pull-requests: write
-      security-events: write
-      actions: read
+    container:
+      image: semgrep/semgrep
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Semgrep
-        run: python -m pip install semgrep
-
       - name: Run Semgrep
+        id: semgrep
+        continue-on-error: true
         run: |
           semgrep scan \
-            --config auto \
-            --sarif \
-            --output semgrep.sarif \
-            .
-
-          semgrep scan \
-            --config auto \
+            --config p/default \
+            --severity ERROR \
             --json \
-            --output semgrep.json \
-            .
+            --sarif \
+            --output semgrep.json
 
-      - name: Verify Semgrep results
-        run: |
-          echo "SARIF file:"
-          ls -lh semgrep.sarif
-
-          echo "JSON file:"
-          ls -lh semgrep.json
-
-      - name: Upload Semgrep results
+      - name: Generate SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: ${{ github.workspace }}/semgrep.sarif
-          category: semgrep
-
-      - name: Create Semgrep PR comment
-        if: always() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          python - <<'PY'
+          semgrep scan \
+            --config p/default \
+            --severity ERROR \
+            --sarif \
+            --output semgrep.sarif
+
+      - name: Create PR Summary
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          python3 - <<'PY'
           import json
 
           with open("semgrep.json", "r", encoding="utf-8") as f:
@@ -73,39 +54,101 @@ jobs:
 
           results = data.get("results", [])
 
-          if not results:
-              body = """## Semgrep Security Scan
+          with open("comment.md", "w", encoding="utf-8") as out:
+              out.write("## Semgrep Security Scan\n\n")
 
-          No Semgrep findings were detected in this pull request. :white_check_mark:
-          """
-          else:
-              lines = [
-                  "## Semgrep Security Scan",
-                  "",
-                  f"**Findings:** {len(results)}",
-                  "",
-                  "| Severity | Rule | File | Line | Message |",
-                  "|---|---|---|---:|---|",
-              ]
+              if not results:
+                  out.write(
+                      "No **ERROR-level** security findings detected. :white_check_mark:\n"
+                  )
+              else:
+                  total = len(results)
 
-              for finding in results:
-                  extra = finding.get("extra", {})
-                  severity = extra.get("severity", "UNKNOWN")
-                  rule = finding.get("check_id", "Unknown")
-                  message = extra.get("message", "").replace("|", "\\|")
-                  path = finding.get("path", "")
-                  line = finding.get("start", {}).get("line", "")
-
-                  lines.append(
-                      f"| {severity} | `{rule}` | `{path}` | {line} | {message} |"
+                  out.write(
+                      f"**{total} ERROR-level finding(s) detected.**\n\n"
                   )
 
-              body = "\n".join(lines)
+                  out.write("| Severity | Finding | File | Line |\n")
+                  out.write("|---|---|---|---:|\n")
 
-          with open("pr-comment.md", "w", encoding="utf-8") as f:
-              f.write(body)
+                  for result in results[:5]:
+                      extra = result.get("extra", {})
+                      metadata = extra.get("metadata", {})
+
+                      severity = extra.get("severity", "ERROR")
+
+                      finding = metadata.get(
+                          "name",
+                          extra.get(
+                              "message",
+                              "No description available"
+                          )
+                      )
+
+                      file_path = result.get("path", "N/A")
+
+                      line = result.get(
+                          "start",
+                          {}
+                      ).get(
+                          "line",
+                          "N/A"
+                      )
+
+                      finding = (
+                          str(finding)
+                          .replace("|", "\\|")
+                          .replace("\n", " ")
+                      )
+
+                      file_path = (
+                          str(file_path)
+                          .replace("|", "\\|")
+                          .replace("\n", " ")
+                      )
+
+                      if len(finding) > 70:
+                          finding = finding[:67] + "..."
+
+                      if len(file_path) > 50:
+                          file_path = "..." + file_path[-47:]
+
+                      out.write(
+                          f"| {severity} | {finding} | "
+                          f"`{file_path}` | {line} |\n"
+                      )
+
+                  if total > 5:
+                      out.write(
+                          f"\n> Showing **5 of {total}** findings. "
+                          "See GitHub Code Scanning for the complete results.\n"
+                      )
           PY
 
-          gh pr comment "$PR_NUMBER" \
-            --body-file pr-comment.md \
-            --repo "${{ github.repository }}"
+      - name: Comment on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: semgrep-security
+          recreate: true
+          path: comment.md
+
+      - name: Verify SARIF
+        if: always()
+        run: |
+          echo "Checking SARIF file..."
+          ls -lh semgrep.sarif
+
+      - name: Upload Semgrep SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ github.workspace }}/semgrep.sarif
+          category: semgrep
+
+      - name: Block PR on ERROR findings
+        if: steps.semgrep.outcome == 'failure'
+        run: |
+          echo "Semgrep found ERROR-level security findings."
+          echo "Fix the security findings before merging this PR."
+          exit 1
