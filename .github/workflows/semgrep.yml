@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
+  security-events: write
 
 jobs:
   semgrep:
@@ -17,6 +19,7 @@ jobs:
 
     permissions:
       contents: read
+      pull-requests: write
       security-events: write
       actions: read
 
@@ -35,9 +38,74 @@ jobs:
             --output semgrep.sarif \
             .
 
+          semgrep scan \
+            --config auto \
+            --json \
+            --output semgrep.json \
+            .
+
+      - name: Verify Semgrep results
+        run: |
+          echo "SARIF file:"
+          ls -lh semgrep.sarif
+
+          echo "JSON file:"
+          ls -lh semgrep.json
+
       - name: Upload Semgrep results
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: semgrep.sarif
+          sarif_file: ${{ github.workspace }}/semgrep.sarif
           category: semgrep
+
+      - name: Create Semgrep PR comment
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python - <<'PY'
+          import json
+
+          with open("semgrep.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          results = data.get("results", [])
+
+          if not results:
+              body = """## Semgrep Security Scan
+
+          No Semgrep findings were detected in this pull request. :white_check_mark:
+          """
+          else:
+              lines = [
+                  "## Semgrep Security Scan",
+                  "",
+                  f"**Findings:** {len(results)}",
+                  "",
+                  "| Severity | Rule | File | Line | Message |",
+                  "|---|---|---|---:|---|",
+              ]
+
+              for finding in results:
+                  extra = finding.get("extra", {})
+                  severity = extra.get("severity", "UNKNOWN")
+                  rule = finding.get("check_id", "Unknown")
+                  message = extra.get("message", "").replace("|", "\\|")
+                  path = finding.get("path", "")
+                  line = finding.get("start", {}).get("line", "")
+
+                  lines.append(
+                      f"| {severity} | `{rule}` | `{path}` | {line} | {message} |"
+                  )
+
+              body = "\n".join(lines)
+
+          with open("pr-comment.md", "w", encoding="utf-8") as f:
+              f.write(body)
+          PY
+
+          gh pr comment "$PR_NUMBER" \
+            --body-file pr-comment.md \
+            --repo "${{ github.repository }}"
