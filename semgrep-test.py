@@ -1,65 +1,62 @@
-# semgrep-vulnerable-test.py
+# semgrep-test.py
 # INTENTIONALLY VULNERABLE TEST CODE - DO NOT USE IN PRODUCTION
 
-import hashlib
-import os
-import pickle
+import jwt
+import requests
 import sqlite3
 import subprocess
-
-# 1. OS Command Injection
-def command_injection(user_input):
-    os.system(user_input)
+import yaml
 
 
-# 2. Shell Command Injection
-def shell_injection(user_input):
+# 1. Command Injection
+def run_command(user_input):
     subprocess.run(user_input, shell=True)
 
 
-# 3. SQL Injection
-def sql_injection(username):
-    connection = sqlite3.connect("test.db")
-    query = "SELECT * FROM users WHERE username = '" + username + "'"
-    return connection.execute(query).fetchall()
+# 2. SQL Injection
+def find_user(username):
+    db = sqlite3.connect("users.db")
+    query = f"SELECT * FROM users WHERE username = '{username}'"
+    return db.execute(query).fetchall()
 
 
-# 4. Hardcoded Secret
-API_KEY = "TEST_API_KEY_123456789"
-DATABASE_PASSWORD = "TestPassword123!"
+# 3. Server-Side Request Forgery (SSRF)
+def fetch_url(url):
+    return requests.get(url)
 
 
-# 5. Weak Hashing
-def weak_hash(password):
-    return hashlib.md5(password.encode()).hexdigest()
+# 4. Weak TLS verification
+def insecure_request(url):
+    return requests.get(url, verify=False)
 
 
-# 6. Insecure Deserialization
-def insecure_deserialization(data):
-    return pickle.loads(data)
+# 5. Hardcoded Secret
+API_TOKEN = "test-secret-token-123456"
 
 
-# 7. Path Traversal
-def path_traversal(filename):
-    with open("/tmp/" + filename, "r") as file:
-        return file.read()
+# 6. Weak JWT configuration
+def create_token(user):
+    return jwt.encode(
+        {"user": user},
+        "secret",
+        algorithm="HS256"
+    )
 
 
-# 8. Code Execution with eval()
-def unsafe_eval(user_input):
-    return eval(user_input)
+# 7. Unsafe YAML deserialization
+def load_config(data):
+    return yaml.load(data, Loader=yaml.Loader)
 
 
-# 9. Code Execution with exec()
-def unsafe_exec(user_input):
-    exec(user_input)
+# 8. Dangerous eval
+def calculate(expression):
+    return eval(expression)
 
 
-# 10. Debug Mode
-def start_application(app):
+# 9. Debug mode
+def start_app(app):
     app.run(debug=True)
 
 
-# Test calls
 if __name__ == "__main__":
-    print("Semgrep vulnerability test file")
+    print("Semgrep vulnerability testing")
