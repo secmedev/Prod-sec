@@ -24,16 +24,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Semgrep
-        run: python -m pip install semgrep
-
       - name: Run Semgrep
-        run: |
-          semgrep scan \
-            --config auto \
-            --sarif \
-            --output semgrep.sarif \
-            .
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: auto
+          generateSarif: "1"
 
       - name: Upload Semgrep results
         if: always()
