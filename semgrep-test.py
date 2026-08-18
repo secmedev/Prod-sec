@@ -1,62 +1,43 @@
 # semgrep-test.py
-# INTENTIONALLY VULNERABLE TEST CODE - DO NOT USE IN PRODUCTION
+# INTENTIONALLY VULNERABLE - FOR SECURITY TESTING ONLfY
 
-import jwt
-import requests
+import hashlib
+import os
 import sqlite3
 import subprocess
-import yaml
 
 
-# 1. Command Injection
+# 1. Command injection
 def run_command(user_input):
+    os.system(user_input)
+
+
+# 2. Shell injection
+def execute_command(user_input):
     subprocess.run(user_input, shell=True)
 
 
-# 2. SQL Injection
-def find_user(username):
+# 3. SQL injection
+def get_user(username):
     db = sqlite3.connect("users.db")
-    query = f"SELECT * FROM users WHERE username = '{username}'"
+    query = "SELECT * FROM users WHERE username = '" + username + "'"
     return db.execute(query).fetchall()
 
 
-# 3. Server-Side Request Forgery (SSRF)
-def fetch_url(url):
-    return requests.get(url)
+# 4. Dangerous eval
+def calculate(user_input):
+    return eval(user_input)
 
 
-# 4. Weak TLS verification
-def insecure_request(url):
-    return requests.get(url, verify=False)
+# 5. Weak cryptographic hash
+def hash_password(password):
+    return hashlib.md5(password.encode()).hexdigest()
 
 
-# 5. Hardcoded Secret
-API_TOKEN = "test-secret-token-123456"
-
-
-# 6. Weak JWT configuration
-def create_token(user):
-    return jwt.encode(
-        {"user": user},
-        "secret",
-        algorithm="HS256"
-    )
-
-
-# 7. Unsafe YAML deserialization
-def load_config(data):
-    return yaml.load(data, Loader=yaml.Loader)
-
-
-# 8. Dangerous eval
-def calculate(expression):
-    return eval(expression)
-
-
-# 9. Debug mode
-def start_app(app):
-    app.run(debug=True)
+# 6. Hardcoded credential
+PASSWORD = "TestPassword123!"
+API_KEY = "test-api-key-123456"
 
 
 if __name__ == "__main__":
-    print("Semgrep vulnerability testing")
+    print("Semgrep security test")
