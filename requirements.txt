@@ -1,4 +1,4 @@
-# Intentionally outdated dependencies for SCA testing
+# Intentionally outdated dependenciess for SCA testing
 
 requests==2.19.1
 urllib3==1.24.1
