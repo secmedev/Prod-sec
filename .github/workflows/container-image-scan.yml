@@ -23,7 +23,11 @@ jobs:
 
       - name: Verify Application Files
         run: |
-          echo "Checking repository structure..."
+          echo "=== Repository Structure ==="
+          find . -maxdepth 3 -type f -print
+
+          echo ""
+          echo "=== Verify Required Files ==="
 
           test -f Dockerfile || {
             echo "ERROR: Dockerfile not found"
@@ -40,13 +44,9 @@ jobs:
             exit 1
           }
 
-          echo "Dockerfile found"
-          echo "requirements.txt found"
-          echo "app/app.py found"
-
-          echo ""
-          echo "Repository files:"
-          find . -maxdepth 3 -type f -print
+          echo "Dockerfile: OK"
+          echo "requirements.txt: OK"
+          echo "app/app.py: OK"
 
       - name: Build Docker Image
         id: docker-build
@@ -85,9 +85,7 @@ jobs:
           python3 <<'PY'
           import json
 
-          report_file = "trivy-results.json"
-
-          with open(report_file) as f:
+          with open("trivy-results.json") as f:
               data = json.load(f)
 
           findings = []
@@ -131,6 +129,7 @@ jobs:
                       "No HIGH or CRITICAL vulnerabilities were found. "
                       ":white_check_mark:\n"
                   )
+
               else:
                   f.write(
                       "### Result\n\n"
@@ -144,6 +143,7 @@ jobs:
                   )
 
                   for item in findings[:10]:
+
                       package = item["package"].replace("|", "\\|")
                       fixed = item["fixed"] or "Not available"
 
