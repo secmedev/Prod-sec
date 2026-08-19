@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: '40 15 * * 4'
+    - cron: "40 15 * * 4"
 
 permissions:
   contents: read
@@ -36,8 +36,9 @@ jobs:
             -t security-test:${{ github.sha }} \
             .
 
+      # Generate SARIF for GitHub Code Scanning
       - name: Run Trivy SARIF scan
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: security-test:${{ github.sha }}
           format: sarif
@@ -46,8 +47,9 @@ jobs:
           ignore-unfixed: false
           exit-code: 0
 
+      # Generate JSON for PR comment
       - name: Run Trivy JSON scan
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: security-test:${{ github.sha }}
           format: json
@@ -56,75 +58,145 @@ jobs:
           ignore-unfixed: false
           exit-code: 0
 
-      - name: Upload Trivy results to GitHub Security
+      # Verify SARIF file
+      - name: Verify Trivy SARIF
+        if: always()
+        run: |
+          if [ -f trivy-results.sarif ]; then
+            echo "Trivy SARIF file created successfully."
+            ls -lh trivy-results.sarif
+          else
+            echo "ERROR: trivy-results.sarif was not created."
+            exit 1
+          fi
+
+      # Upload results to GitHub Security
+      - name: Upload Trivy results
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{ github.workspace }}/trivy-results.sarif
           category: trivy-image
 
+      # Create PR comment
       - name: Create image scan PR comment
         if: always() && github.event_name == 'pull_request'
         run: |
           python3 - <<'PY'
           import json
+          import os
 
-          with open("trivy-results.json", "r", encoding="utf-8") as f:
-              data = json.load(f)
+          report = "trivy-results.json"
 
-          findings = []
+          if not os.path.exists(report):
+              findings = []
+          else:
+              try:
+                  with open(report, "r", encoding="utf-8") as f:
+                      data = json.load(f)
+              except (json.JSONDecodeError, ValueError):
+                  data = {}
 
-          for result in data.get("Results", []):
-              target = result.get("Target", "Unknown")
+              findings = []
 
-              for vuln in result.get("Vulnerabilities") or []:
-                  findings.append({
-                      "severity": vuln.get("Severity", "UNKNOWN"),
-                      "id": vuln.get("VulnerabilityID", "UNKNOWN"),
-                      "package": vuln.get("PkgName", "UNKNOWN"),
-                      "installed": vuln.get("InstalledVersion", "UNKNOWN"),
-                      "fixed": vuln.get("FixedVersion", "Not available"),
-                      "target": target
-                  })
+              for result in data.get("Results", []):
+                  target = result.get("Target", "Unknown")
 
-          with open("trivy-comment.md", "w", encoding="utf-8") as out:
-              out.write("## Trivy Container Image Scan\n\n")
+                  for vuln in result.get("Vulnerabilities") or []:
+                      findings.append({
+                          "severity": vuln.get("Severity", "UNKNOWN"),
+                          "id": vuln.get("VulnerabilityID", "UNKNOWN"),
+                          "package": vuln.get("PkgName", "UNKNOWN"),
+                          "installed": vuln.get(
+                              "InstalledVersion",
+                              "UNKNOWN"
+                          ),
+                          "fixed": vuln.get(
+                              "FixedVersion",
+                              "Not available"
+                          ),
+                          "target": target
+                      })
+
+          with open(
+              "trivy-comment.md",
+              "w",
+              encoding="utf-8"
+          ) as out:
+
+              out.write(
+                  "## Trivy Container Image Scan\n\n"
+              )
 
               if not findings:
                   out.write(
-                      "No **HIGH or CRITICAL** vulnerabilities were detected "
-                      "in the Docker image. :white_check_mark:\n"
+                      "No **HIGH or CRITICAL** vulnerabilities "
+                      "were detected in the Docker image. "
+                      ":white_check_mark:\n"
                   )
+
               else:
+                  total = len(findings)
+
                   out.write(
-                      f"**{len(findings)} HIGH/CRITICAL vulnerabilities detected.**\n\n"
+                      f"**{total} HIGH/CRITICAL "
+                      "vulnerabilities detected.** :x:\n\n"
                   )
 
                   out.write(
-                      "| Severity | CVE | Package | Installed | Fixed | Target |\n"
+                      "| Severity | CVE | Package | "
+                      "Installed | Fixed | Target |\n"
                   )
+
                   out.write(
                       "|---|---|---|---|---|---|\n"
                   )
 
                   for finding in findings[:10]:
+
+                      severity = str(
+                          finding["severity"]
+                      ).replace("|", "\\|")
+
+                      vulnerability_id = str(
+                          finding["id"]
+                      ).replace("|", "\\|")
+
+                      package = str(
+                          finding["package"]
+                      ).replace("|", "\\|")
+
+                      installed = str(
+                          finding["installed"]
+                      ).replace("|", "\\|")
+
+                      fixed = str(
+                          finding["fixed"]
+                      ).replace("|", "\\|")
+
+                      target = str(
+                          finding["target"]
+                      ).replace("|", "\\|")
+
                       out.write(
-                          f"| {finding['severity']} "
-                          f"| `{finding['id']}` "
-                          f"| `{finding['package']}` "
-                          f"| `{finding['installed']}` "
-                          f"| `{finding['fixed']}` "
-                          f"| `{finding['target']}` |\n"
+                          f"| {severity} "
+                          f"| `{vulnerability_id}` "
+                          f"| `{package}` "
+                          f"| `{installed}` "
+                          f"| `{fixed}` "
+                          f"| `{target}` |\n"
                       )
 
-                  if len(findings) > 10:
+                  if total > 10:
                       out.write(
-                          f"\n> Showing **10 of {len(findings)}** findings. "
-                          "See **Security → Code scanning** for the complete results.\n"
+                          f"\n> Showing **10 of {total}** findings. "
+                          "See **Security → Code scanning** "
+                          "for the complete results.\n"
                       )
 
           PY
 
+      # Update the same PR comment on every new commit
       - name: Post image scan results to PR
         if: always() && github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@v2
@@ -133,9 +205,10 @@ jobs:
           recreate: true
           path: trivy-comment.md
 
+      # Fail the PR when HIGH or CRITICAL vulnerabilities are found
       - name: Enforce image security
         if: always()
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: security-test:${{ github.sha }}
           format: table
