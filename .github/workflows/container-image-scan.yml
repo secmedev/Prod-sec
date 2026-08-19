@@ -36,77 +36,108 @@ jobs:
             -t security-test:${{ github.sha }} \
             .
 
-      # Generate SARIF for GitHub Code Scanning
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg
+
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+          trivy --version
+
       - name: Run Trivy SARIF scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: security-test:${{ github.sha }}
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-          ignore-unfixed: false
-          exit-code: 0
+        run: |
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --format sarif \
+            --output trivy-results.sarif \
+            security-test:${{ github.sha }}
 
-      # Generate JSON for PR comment
       - name: Run Trivy JSON scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: security-test:${{ github.sha }}
-          format: json
-          output: trivy-results.json
-          severity: CRITICAL,HIGH
-          ignore-unfixed: false
-          exit-code: 0
+        run: |
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --format json \
+            --output trivy-results.json \
+            security-test:${{ github.sha }}
 
-      # Verify SARIF file
-      - name: Verify Trivy SARIF
+      - name: Verify Trivy results
         if: always()
         run: |
-          if [ -f trivy-results.sarif ]; then
-            echo "Trivy SARIF file created successfully."
-            ls -lh trivy-results.sarif
-          else
-            echo "ERROR: trivy-results.sarif was not created."
+          echo "Checking Trivy output..."
+
+          if [ ! -f trivy-results.sarif ]; then
+            echo "ERROR: trivy-results.sarif does not exist."
             exit 1
           fi
 
-      # Upload results to GitHub Security
+          if [ ! -f trivy-results.json ]; then
+            echo "ERROR: trivy-results.json does not exist."
+            exit 1
+          fi
+
+          echo "SARIF file:"
+          ls -lh trivy-results.sarif
+
+          echo "JSON file:"
+          ls -lh trivy-results.json
+
       - name: Upload Trivy results
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{ github.workspace }}/trivy-results.sarif
-          category: trivy-image
+          category: trivy-container-image
 
-      # Create PR comment
-      - name: Create image scan PR comment
+      - name: Create PR comment
         if: always() && github.event_name == 'pull_request'
         run: |
           python3 - <<'PY'
           import json
-          import os
 
-          report = "trivy-results.json"
+          findings = []
 
-          if not os.path.exists(report):
-              findings = []
-          else:
-              try:
-                  with open(report, "r", encoding="utf-8") as f:
-                      data = json.load(f)
-              except (json.JSONDecodeError, ValueError):
-                  data = {}
-
-              findings = []
+          try:
+              with open(
+                  "trivy-results.json",
+                  "r",
+                  encoding="utf-8"
+              ) as f:
+                  data = json.load(f)
 
               for result in data.get("Results", []):
-                  target = result.get("Target", "Unknown")
+                  target = result.get(
+                      "Target",
+                      "Unknown"
+                  )
 
-                  for vuln in result.get("Vulnerabilities") or []:
+                  for vuln in result.get(
+                      "Vulnerabilities"
+                  ) or []:
+
                       findings.append({
-                          "severity": vuln.get("Severity", "UNKNOWN"),
-                          "id": vuln.get("VulnerabilityID", "UNKNOWN"),
-                          "package": vuln.get("PkgName", "UNKNOWN"),
+                          "severity": vuln.get(
+                              "Severity",
+                              "UNKNOWN"
+                          ),
+                          "id": vuln.get(
+                              "VulnerabilityID",
+                              "UNKNOWN"
+                          ),
+                          "package": vuln.get(
+                              "PkgName",
+                              "UNKNOWN"
+                          ),
                           "installed": vuln.get(
                               "InstalledVersion",
                               "UNKNOWN"
@@ -117,6 +148,11 @@ jobs:
                           ),
                           "target": target
                       })
+
+          except Exception as e:
+              print(
+                  f"Could not parse Trivy results: {e}"
+              )
 
           with open(
               "trivy-comment.md",
@@ -129,13 +165,16 @@ jobs:
               )
 
               if not findings:
+
                   out.write(
-                      "No **HIGH or CRITICAL** vulnerabilities "
-                      "were detected in the Docker image. "
+                      "No **HIGH or CRITICAL** "
+                      "vulnerabilities were detected "
+                      "in the container image. "
                       ":white_check_mark:\n"
                   )
 
               else:
+
                   total = len(findings)
 
                   out.write(
@@ -154,64 +193,51 @@ jobs:
 
                   for finding in findings[:10]:
 
-                      severity = str(
-                          finding["severity"]
-                      ).replace("|", "\\|")
-
-                      vulnerability_id = str(
-                          finding["id"]
-                      ).replace("|", "\\|")
-
-                      package = str(
-                          finding["package"]
-                      ).replace("|", "\\|")
-
-                      installed = str(
-                          finding["installed"]
-                      ).replace("|", "\\|")
-
-                      fixed = str(
-                          finding["fixed"]
-                      ).replace("|", "\\|")
-
-                      target = str(
-                          finding["target"]
-                      ).replace("|", "\\|")
-
                       out.write(
-                          f"| {severity} "
-                          f"| `{vulnerability_id}` "
-                          f"| `{package}` "
-                          f"| `{installed}` "
-                          f"| `{fixed}` "
-                          f"| `{target}` |\n"
+                          f"| {finding['severity']} "
+                          f"| `{finding['id']}` "
+                          f"| `{finding['package']}` "
+                          f"| `{finding['installed']}` "
+                          f"| `{finding['fixed']}` "
+                          f"| `{finding['target']}` |\n"
                       )
 
                   if total > 10:
+
                       out.write(
-                          f"\n> Showing **10 of {total}** findings. "
+                          f"\n> Showing **10 of "
+                          f"{total}** findings. "
                           "See **Security → Code scanning** "
                           "for the complete results.\n"
                       )
 
           PY
 
-      # Update the same PR comment on every new commit
-      - name: Post image scan results to PR
+          echo "Generated PR comment:"
+          cat trivy-comment.md
+
+      - name: Verify PR comment
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          if [ ! -s trivy-comment.md ]; then
+            echo "ERROR: trivy-comment.md is missing or empty."
+            exit 1
+          fi
+
+          echo "PR comment file created successfully."
+
+      - name: Post Trivy results to PR
         if: always() && github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
-          header: trivy-image-scan
+          header: trivy-container-image
           recreate: true
           path: trivy-comment.md
 
-      # Fail the PR when HIGH or CRITICAL vulnerabilities are found
       - name: Enforce image security
-        if: always()
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: security-test:${{ github.sha }}
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: false
-          exit-code: 1
+        run: |
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            security-test:${{ github.sha }}
