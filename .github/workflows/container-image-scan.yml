@@ -13,8 +13,8 @@ permissions:
   pull-requests: write
 
 jobs:
-  trivy-image-scan:
-    name: Trivy Container Image Scan
+  container-image-scan:
+    name: Build and Scan Container Image
     runs-on: ubuntu-latest
 
     steps:
@@ -23,67 +23,38 @@ jobs:
 
       - name: Verify Application Files
         run: |
-          echo "Repository:"
+          echo "=== Repository ==="
           pwd
 
           echo ""
-          echo "Files:"
+          echo "=== Repository Files ==="
           find . -maxdepth 3 -type f -print
 
           echo ""
-          echo "Checking app directory:"
-          test -d app || {
-            echo "ERROR: app directory does not exist"
-            exit 1
-          }
+          echo "=== Verify app/app.py ==="
+          test -f app/app.py
+          echo "app/app.py found"
 
           echo ""
-          echo "Checking app.py:"
-          test -f app/app.py || {
-            echo "ERROR: app/app.py does not exist"
-            exit 1
-          }
+          echo "=== Verify requirements.txt ==="
+          test -f requirements.txt
+          echo "requirements.txt found"
 
           echo ""
-          echo "Application files found successfully:"
-          ls -la app
+          echo "=== Verify Dockerfile ==="
+          test -f Dockerfile
+          echo "Dockerfile found"
 
       - name: Build Docker Image
         id: docker-build
-        continue-on-error: true
         run: |
           docker build \
             --no-cache \
             --progress=plain \
             -t local/securitytest:${{ github.sha }} .
 
-      - name: Create Build Failure PR Comment
-        if: github.event_name == 'pull_request' && steps.docker-build.outcome == 'failure'
-        shell: bash
-        run: |
-          cat > comment.md <<'EOF'
-          ## Trivy Container Image Security Scan
-
-          ### Result
-
-          ❌ **Docker image build failed.**
-
-          Trivy image scanning could not be performed because the Docker image could not be built.
-
-          Please check the Docker build logs and fix the Dockerfile or application build.
-          EOF
-
-      - name: Comment Build Failure on PR
-        if: github.event_name == 'pull_request' && steps.docker-build.outcome == 'failure'
-        uses: marocchino/sticky-pull-request-comment@v2
-        with:
-          header: trivy-container-image
-          recreate: true
-          path: comment.md
-
       - name: Run Trivy Image Scan
         id: trivy
-        if: steps.docker-build.outcome == 'success'
         continue-on-error: true
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -97,7 +68,7 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy Report
-        if: always() && steps.docker-build.outcome == 'success'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-container-image-report
@@ -105,18 +76,23 @@ jobs:
           retention-days: 30
 
       - name: Create PR Summary
-        if: always() && github.event_name == 'pull_request' && steps.docker-build.outcome == 'success'
+        if: always() && github.event_name == 'pull_request'
         shell: bash
         run: |
           python3 <<'PY'
           import json
+          import os
 
-          with open("trivy-results.json") as f:
+          report = "trivy-results.json"
+
+          with open(report) as f:
               data = json.load(f)
 
           findings = []
 
           for result in data.get("Results", []):
+              target = result.get("Target", "")
+
               for vuln in result.get("Vulnerabilities", []) or []:
                   severity = vuln.get("Severity", "")
 
@@ -128,7 +104,9 @@ jobs:
                       "id": vuln.get("VulnerabilityID", ""),
                       "package": vuln.get("PkgName", ""),
                       "installed": vuln.get("InstalledVersion", ""),
-                      "fixed": vuln.get("FixedVersion", "")
+                      "fixed": vuln.get("FixedVersion", ""),
+                      "title": vuln.get("Title", ""),
+                      "target": target
                   })
 
           severity_order = {
@@ -148,12 +126,14 @@ jobs:
               if total == 0:
                   f.write(
                       "### Result\n\n"
-                      "✅ No HIGH or CRITICAL vulnerabilities were found.\n"
+                      "No HIGH or CRITICAL vulnerabilities were found. "
+                      ":white_check_mark:\n"
                   )
               else:
                   f.write(
-                      f"### Result\n\n"
-                      f"⚠️ **{total} HIGH/CRITICAL vulnerabilities detected.**\n\n"
+                      "### Result\n\n"
+                      f"**{total} HIGH/CRITICAL vulnerabilities detected.** "
+                      ":warning:\n\n"
                   )
 
                   f.write(
@@ -162,12 +142,13 @@ jobs:
                   )
 
                   for item in findings[:10]:
+                      package = item["package"].replace("|", "\\|")
                       fixed = item["fixed"] or "Not available"
 
                       f.write(
                           f"| {item['severity']} | "
                           f"`{item['id']}` | "
-                          f"`{item['package']}` | "
+                          f"`{package}` | "
                           f"`{item['installed']}` | "
                           f"`{fixed}` |\n"
                       )
@@ -177,24 +158,20 @@ jobs:
                           f"\n> Showing **10 of {total}** findings. "
                           "See the workflow artifact for the complete report.\n"
                       )
+
           PY
 
       - name: Comment on PR
-        if: always() && github.event_name == 'pull_request' && steps.docker-build.outcome == 'success'
+        if: always() && github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: trivy-container-image
           recreate: true
           path: comment.md
 
-      - name: Fail if Docker Build Failed
-        if: steps.docker-build.outcome == 'failure'
-        run: |
-          echo "Docker image build failed."
-          exit 1
-
       - name: Fail if HIGH or CRITICAL Vulnerabilities Found
         if: steps.trivy.outcome == 'failure'
         run: |
           echo "HIGH or CRITICAL container image vulnerabilities were found."
+          echo "Please review the Trivy findings and remediate the affected packages."
           exit 1
