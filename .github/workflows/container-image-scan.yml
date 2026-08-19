@@ -21,16 +21,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show Build Context
+      - name: Verify Application Files
         run: |
-          echo "Repository structure:"
-          find . -maxdepth 3 -type f | sort
+          echo "Repository:"
+          pwd
+
+          echo ""
+          echo "Files:"
+          find . -maxdepth 3 -type f -print
+
+          echo ""
+          echo "Checking app directory:"
+          test -d app || {
+            echo "ERROR: app directory does not exist"
+            exit 1
+          }
+
+          echo ""
+          echo "Checking app.py:"
+          test -f app/app.py || {
+            echo "ERROR: app/app.py does not exist"
+            exit 1
+          }
+
+          echo ""
+          echo "Application files found successfully:"
+          ls -la app
 
       - name: Build Docker Image
         id: docker-build
         continue-on-error: true
         run: |
-          docker build -t local/securitytest:${{ github.sha }} .
+          docker build \
+            --no-cache \
+            --progress=plain \
+            -t local/securitytest:${{ github.sha }} .
 
       - name: Create Build Failure PR Comment
         if: github.event_name == 'pull_request' && steps.docker-build.outcome == 'failure'
@@ -41,11 +66,11 @@ jobs:
 
           ### Result
 
-          :x: **Docker image build failed.**
+          ❌ **Docker image build failed.**
 
           Trivy image scanning could not be performed because the Docker image could not be built.
 
-          Please check the Docker build logs and fix the image build before the security scan can continue.
+          Please check the Docker build logs and fix the Dockerfile or application build.
           EOF
 
       - name: Comment Build Failure on PR
@@ -92,8 +117,6 @@ jobs:
           findings = []
 
           for result in data.get("Results", []):
-              target = result.get("Target", "")
-
               for vuln in result.get("Vulnerabilities", []) or []:
                   severity = vuln.get("Severity", "")
 
@@ -105,9 +128,7 @@ jobs:
                       "id": vuln.get("VulnerabilityID", ""),
                       "package": vuln.get("PkgName", ""),
                       "installed": vuln.get("InstalledVersion", ""),
-                      "fixed": vuln.get("FixedVersion", ""),
-                      "title": vuln.get("Title", ""),
-                      "target": target
+                      "fixed": vuln.get("FixedVersion", "")
                   })
 
           severity_order = {
@@ -120,7 +141,6 @@ jobs:
           )
 
           total = len(findings)
-          top = findings[:10]
 
           with open("comment.md", "w") as f:
               f.write("## Trivy Container Image Security Scan\n\n")
@@ -128,14 +148,12 @@ jobs:
               if total == 0:
                   f.write(
                       "### Result\n\n"
-                      "No HIGH or CRITICAL vulnerabilities were found. "
-                      ":white_check_mark:\n"
+                      "✅ No HIGH or CRITICAL vulnerabilities were found.\n"
                   )
               else:
                   f.write(
                       f"### Result\n\n"
-                      f"**{total} HIGH/CRITICAL vulnerabilities detected.** "
-                      ":warning:\n\n"
+                      f"⚠️ **{total} HIGH/CRITICAL vulnerabilities detected.**\n\n"
                   )
 
                   f.write(
@@ -143,22 +161,21 @@ jobs:
                       "|---|---|---|---|---|\n"
                   )
 
-                  for item in top:
-                      severity = item["severity"]
-                      vuln_id = item["id"]
-                      package = item["package"].replace("|", "\\|")
-                      installed = item["installed"]
+                  for item in findings[:10]:
                       fixed = item["fixed"] or "Not available"
 
                       f.write(
-                          f"| {severity} | `{vuln_id}` | "
-                          f"`{package}` | `{installed}` | `{fixed}` |\n"
+                          f"| {item['severity']} | "
+                          f"`{item['id']}` | "
+                          f"`{item['package']}` | "
+                          f"`{item['installed']}` | "
+                          f"`{fixed}` |\n"
                       )
 
                   if total > 10:
                       f.write(
                           f"\n> Showing **10 of {total}** findings. "
-                          "See the workflow artifact for the complete Trivy report.\n"
+                          "See the workflow artifact for the complete report.\n"
                       )
           PY
 
@@ -176,9 +193,8 @@ jobs:
           echo "Docker image build failed."
           exit 1
 
-      - name: Fail if HIGH or CRITICAL vulnerabilities are found
+      - name: Fail if HIGH or CRITICAL Vulnerabilities Found
         if: steps.trivy.outcome == 'failure'
         run: |
           echo "HIGH or CRITICAL container image vulnerabilities were found."
-          echo "Please review the Trivy findings and remediate the affected packages."
           exit 1
