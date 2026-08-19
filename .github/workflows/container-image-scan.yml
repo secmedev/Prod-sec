@@ -23,38 +23,63 @@ jobs:
 
       - name: Verify Application Files
         run: |
-          echo "=== Repository ==="
-          pwd
+          echo "Checking repository structure..."
 
-          echo ""
-          echo "=== Repository Files ==="
-          find . -maxdepth 3 -type f -print
+          test -f Dockerfile || {
+            echo "ERROR: Dockerfile not found"
+            exit 1
+          }
 
-          echo ""
-          echo "=== Verify app/app.py ==="
-          test -f app/app.py
-          echo "app/app.py found"
+          test -f requirements.txt || {
+            echo "ERROR: requirements.txt not found"
+            exit 1
+          }
 
-          echo ""
-          echo "=== Verify requirements.txt ==="
-          test -f requirements.txt
-          echo "requirements.txt found"
+          test -f app/app.py || {
+            echo "ERROR: app/app.py not found"
+            exit 1
+          }
 
-          echo ""
-          echo "=== Verify Dockerfile ==="
-          test -f Dockerfile
           echo "Dockerfile found"
+          echo "requirements.txt found"
+          echo "app/app.py found"
 
       - name: Build Docker Image
         id: docker-build
+        continue-on-error: true
         run: |
           docker build \
             --no-cache \
             --progress=plain \
             -t local/securitytest:${{ github.sha }} .
 
+      - name: Create Docker Build Failure Comment
+        if: github.event_name == 'pull_request' && steps.docker-build.outcome == 'failure'
+        shell: bash
+        run: |
+          cat > comment.md <<'EOF'
+          ## Container Image Security Scan
+
+          ### Result
+
+          ❌ **Docker image build failed.**
+
+          Trivy image scanning could not be performed because the container image could not be built.
+
+          Please review the Docker build logs and fix the dependency or Docker build issue.
+          EOF
+
+      - name: Comment Docker Build Failure
+        if: github.event_name == 'pull_request' && steps.docker-build.outcome == 'failure'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: trivy-container-image
+          recreate: true
+          path: comment.md
+
       - name: Run Trivy Image Scan
         id: trivy
+        if: steps.docker-build.outcome == 'success'
         continue-on-error: true
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -68,32 +93,28 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy Report
-        if: always()
+        if: always() && steps.docker-build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: trivy-container-image-report
           path: trivy-results.json
           retention-days: 30
 
-      - name: Create PR Summary
-        if: always() && github.event_name == 'pull_request'
+      - name: Create Trivy PR Summary
+        if: github.event_name == 'pull_request' && steps.docker-build.outcome == 'success'
         shell: bash
         run: |
           python3 <<'PY'
           import json
-          import os
 
-          report = "trivy-results.json"
-
-          with open(report) as f:
+          with open("trivy-results.json") as f:
               data = json.load(f)
 
           findings = []
 
           for result in data.get("Results", []):
-              target = result.get("Target", "")
-
               for vuln in result.get("Vulnerabilities", []) or []:
+
                   severity = vuln.get("Severity", "")
 
                   if severity not in ("HIGH", "CRITICAL"):
@@ -104,9 +125,7 @@ jobs:
                       "id": vuln.get("VulnerabilityID", ""),
                       "package": vuln.get("PkgName", ""),
                       "installed": vuln.get("InstalledVersion", ""),
-                      "fixed": vuln.get("FixedVersion", ""),
-                      "title": vuln.get("Title", ""),
-                      "target": target
+                      "fixed": vuln.get("FixedVersion", "")
                   })
 
           severity_order = {
@@ -121,19 +140,21 @@ jobs:
           total = len(findings)
 
           with open("comment.md", "w") as f:
+
               f.write("## Trivy Container Image Security Scan\n\n")
 
               if total == 0:
+
                   f.write(
                       "### Result\n\n"
-                      "No HIGH or CRITICAL vulnerabilities were found. "
-                      ":white_check_mark:\n"
+                      "✅ No HIGH or CRITICAL vulnerabilities were found.\n"
                   )
+
               else:
+
                   f.write(
                       "### Result\n\n"
-                      f"**{total} HIGH/CRITICAL vulnerabilities detected.** "
-                      ":warning:\n\n"
+                      f"⚠️ **{total} HIGH/CRITICAL vulnerabilities detected.**\n\n"
                   )
 
                   f.write(
@@ -142,6 +163,7 @@ jobs:
                   )
 
                   for item in findings[:10]:
+
                       package = item["package"].replace("|", "\\|")
                       fixed = item["fixed"] or "Not available"
 
@@ -158,20 +180,25 @@ jobs:
                           f"\n> Showing **10 of {total}** findings. "
                           "See the workflow artifact for the complete report.\n"
                       )
-
           PY
 
-      - name: Comment on PR
-        if: always() && github.event_name == 'pull_request'
+      - name: Comment Trivy Results
+        if: github.event_name == 'pull_request' && steps.docker-build.outcome == 'success'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: trivy-container-image
           recreate: true
           path: comment.md
 
+      - name: Fail if Docker Build Failed
+        if: steps.docker-build.outcome == 'failure'
+        run: |
+          echo "Docker image build failed."
+          exit 1
+
       - name: Fail if HIGH or CRITICAL Vulnerabilities Found
         if: steps.trivy.outcome == 'failure'
         run: |
           echo "HIGH or CRITICAL container image vulnerabilities were found."
-          echo "Please review the Trivy findings and remediate the affected packages."
+          echo "Please review the Trivy findings."
           exit 1
