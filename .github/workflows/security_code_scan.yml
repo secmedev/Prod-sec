@@ -1,9 +1,10 @@
-name: Security Code Scan
+name: Semgrep Security Scan
 
 on:
   pull_request:
     branches:
       - main
+
   workflow_dispatch:
 
 permissions:
@@ -19,11 +20,17 @@ jobs:
     container:
       image: semgrep/semgrep
 
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+      actions: read
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run Semgrep
+      - name: Run Semgrep JSON scan
         id: semgrep
         continue-on-error: true
         run: |
@@ -31,63 +38,118 @@ jobs:
             --config p/default \
             --severity ERROR \
             --json \
-            --sarif \
-            --output semgrep.json
+            --output semgrep.json \
+            .
 
-      - name: Generate SARIF
+      - name: Check Semgrep JSON
+        if: always()
+        run: |
+          echo "Checking Semgrep JSON output..."
+
+          if [ -f semgrep.json ]; then
+            echo "semgrep.json created successfully"
+            ls -lh semgrep.json
+          else
+            echo "semgrep.json was not created"
+            echo '{"results":[]}' > semgrep.json
+          fi
+
+      - name: Generate Semgrep SARIF
         if: always()
         run: |
           semgrep scan \
             --config p/default \
             --severity ERROR \
             --sarif \
-            --output semgrep.sarif
+            --output semgrep.sarif \
+            .
 
-      - name: Create PR Summary
+      - name: Check SARIF
+        if: always()
+        run: |
+          if [ -f semgrep.sarif ]; then
+            echo "semgrep.sarif created successfully"
+            ls -lh semgrep.sarif
+          else
+            echo "ERROR: semgrep.sarif was not created"
+            exit 1
+          fi
+
+      - name: Upload Semgrep results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ github.workspace }}/semgrep.sarif
+          category: semgrep
+
+      - name: Create PR Comment
         if: always() && github.event_name == 'pull_request'
         run: |
           python3 - <<'PY'
           import json
+          import os
 
-          with open("semgrep.json", "r", encoding="utf-8") as f:
-              data = json.load(f)
+          report = "semgrep.json"
 
-          results = data.get("results", [])
+          if not os.path.exists(report):
+              findings = []
+          else:
+              try:
+                  with open(report, "r", encoding="utf-8") as f:
+                      data = json.load(f)
+
+                  findings = data.get("results", [])
+
+              except (json.JSONDecodeError, ValueError):
+                  findings = []
 
           with open("comment.md", "w", encoding="utf-8") as out:
+
               out.write("## Semgrep Security Scan\n\n")
 
-              if not results:
+              if not findings:
                   out.write(
-                      "No **ERROR-level** security findings detected. :white_check_mark:\n"
+                      "No **ERROR-level security findings** detected. "
+                      ":white_check_mark:\n"
                   )
+
               else:
-                  total = len(results)
+                  total = len(findings)
 
                   out.write(
-                      f"**{total} ERROR-level finding(s) detected.**\n\n"
+                      f"**{total} ERROR-level finding(s) detected.** "
+                      ":x:\n\n"
                   )
 
-                  out.write("| Severity | Finding | File | Line |\n")
-                  out.write("|---|---|---|---:|\n")
+                  out.write(
+                      "| Severity | Rule | File | Line | Finding |\n"
+                  )
 
-                  for result in results[:5]:
-                      extra = result.get("extra", {})
+                  out.write(
+                      "|---|---|---|---:|---|\n"
+                  )
+
+                  for finding in findings[:10]:
+
+                      extra = finding.get("extra", {})
                       metadata = extra.get("metadata", {})
 
-                      severity = extra.get("severity", "ERROR")
-
-                      finding = metadata.get(
-                          "name",
-                          extra.get(
-                              "message",
-                              "No description available"
-                          )
+                      severity = extra.get(
+                          "severity",
+                          "ERROR"
                       )
 
-                      file_path = result.get("path", "N/A")
+                      rule = finding.get(
+                          "check_id",
+                          "Unknown"
+                      )
 
-                      line = result.get(
+                      file_path = finding.get(
+                          "path",
+                          "N/A"
+                      )
+
+                      line = finding.get(
                           "start",
                           {}
                       ).get(
@@ -95,11 +157,15 @@ jobs:
                           "N/A"
                       )
 
-                      finding = (
-                          str(finding)
-                          .replace("|", "\\|")
-                          .replace("\n", " ")
+                      message = metadata.get(
+                          "name",
+                          extra.get(
+                              "message",
+                              "Security finding"
+                          )
                       )
+
+                      rule = str(rule).replace("|", "\\|")
 
                       file_path = (
                           str(file_path)
@@ -107,22 +173,27 @@ jobs:
                           .replace("\n", " ")
                       )
 
-                      if len(finding) > 70:
-                          finding = finding[:67] + "..."
-
-                      if len(file_path) > 50:
-                          file_path = "..." + file_path[-47:]
-
-                      out.write(
-                          f"| {severity} | {finding} | "
-                          f"`{file_path}` | {line} |\n"
+                      message = (
+                          str(message)
+                          .replace("|", "\\|")
+                          .replace("\n", " ")
                       )
 
-                  if total > 5:
+                      if len(message) > 80:
+                          message = message[:77] + "..."
+
                       out.write(
-                          f"\n> Showing **5 of {total}** findings. "
-                          "See GitHub Code Scanning for the complete results.\n"
+                          f"| {severity} | `{rule}` | "
+                          f"`{file_path}` | {line} | "
+                          f"{message} |\n"
                       )
+
+                  if total > 10:
+                      out.write(
+                          f"\n> Showing **10 of {total}** findings. "
+                          "See **Security → Code scanning** for the complete results.\n"
+                      )
+
           PY
 
       - name: Comment on PR
@@ -133,22 +204,9 @@ jobs:
           recreate: true
           path: comment.md
 
-      - name: Verify SARIF
-        if: always()
-        run: |
-          echo "Checking SARIF file..."
-          ls -lh semgrep.sarif
-
-      - name: Upload Semgrep SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: ${{ github.workspace }}/semgrep.sarif
-          category: semgrep
-
-      - name: Block PR on ERROR findings
+      - name: Block PR on Semgrep findings
         if: steps.semgrep.outcome == 'failure'
         run: |
           echo "Semgrep found ERROR-level security findings."
-          echo "Fix the security findings before merging this PR."
+          echo "Fix the findings before merging this PR."
           exit 1
