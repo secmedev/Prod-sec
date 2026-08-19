@@ -1,0 +1,133 @@
+name: Security - Container Image Scan
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  image-scan:
+    name: Trivy Container Image Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: |
+          docker build -t security-scan-image:${{ github.sha }} .
+
+      - name: Run Trivy Image Scan
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: security-scan-image:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          format: json
+          output: trivy-image-results.json
+          exit-code: '0'
+          ignore-unfixed: true
+
+      - name: Upload Trivy Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-container-image-report
+          path: trivy-image-results.json
+          retention-days: 30
+
+      - name: Create PR Summary
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import json
+
+          with open("trivy-image-results.json") as f:
+              data = json.load(f)
+
+          findings = []
+
+          for result in data.get("Results", []):
+              target = result.get("Target", "")
+              result_type = result.get("Type", "")
+
+              for vuln in result.get("Vulnerabilities", []):
+                  severity = vuln.get("Severity", "")
+
+                  if severity not in ("HIGH", "CRITICAL"):
+                      continue
+
+                  findings.append({
+                      "severity": severity,
+                      "id": vuln.get("VulnerabilityID", ""),
+                      "package": vuln.get("PkgName", ""),
+                      "installed": vuln.get("InstalledVersion", ""),
+                      "fixed": vuln.get("FixedVersion", ""),
+                      "title": vuln.get("Title", ""),
+                      "target": target,
+                      "type": result_type
+                  })
+
+          severity_order = {
+              "CRITICAL": 0,
+              "HIGH": 1
+          }
+
+          findings.sort(
+              key=lambda x: severity_order.get(x["severity"], 99)
+          )
+
+          total = len(findings)
+          top = findings[:10]
+
+          with open("comment.md", "w") as f:
+              f.write("## Trivy Container Image Security Scan\n\n")
+
+              if total == 0:
+                  f.write(
+                      "### Result\n\n"
+                      "No HIGH or CRITICAL vulnerabilities were detected. "
+                      ":white_check_mark:\n"
+                  )
+              else:
+                  f.write(
+                      f"### Result\n\n"
+                      f"**{total} HIGH/CRITICAL vulnerabilities detected.** "
+                      ":warning:\n\n"
+                  )
+
+                  f.write(
+                      "| Severity | CVE | Package | Installed | Fixed |\n"
+                      "|---|---|---|---|---|\n"
+                  )
+
+                  for item in top:
+                      severity = item["severity"]
+                      vuln_id = item["id"]
+                      package = item["package"].replace("|", "\\|")
+                      installed = item["installed"]
+                      fixed = item["fixed"] or "Not available"
+
+                      f.write(
+                          f"| {severity} | `{vuln_id}` | "
+                          f"`{package}` | `{installed}` | `{fixed}` |\n"
+                      )
+
+                  if total > 10:
+                      f.write(
+                          f"\n> Showing **10 of {total}** findings. "
+                          "See the workflow artifact for the complete Trivy report.\n"
+                      )
+
+          PY
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: trivy-container-image
+          recreate: true
+          path: comment.md
