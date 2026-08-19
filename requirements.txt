@@ -1,7 +1,7 @@
 # Intentionally outdated dependencies for SCA testing
 
 requests==2.19.1
-urllib3==1.24.1
+urllib3==1.23
 Django==2.2.0
 Flask==0.12.2
 Jinja2==2.10
