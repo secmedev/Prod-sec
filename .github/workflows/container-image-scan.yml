@@ -1,6 +1,10 @@
 name: Security - Container Image Scan
 
 on:
+  push:
+    branches:
+      - main
+      - master
   pull_request:
   workflow_dispatch:
 
@@ -9,7 +13,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  image-scan:
+  trivy-image-scan:
     name: Trivy Container Image Scan
     runs-on: ubuntu-latest
 
@@ -17,44 +21,80 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build Docker Image
+      - name: Show Build Context
         run: |
-          docker build -t security-scan-image:${{ github.sha }} .
+          echo "Repository structure:"
+          find . -maxdepth 3 -type f | sort
+
+      - name: Build Docker Image
+        id: docker-build
+        continue-on-error: true
+        run: |
+          docker build -t local/securitytest:${{ github.sha }} .
+
+      - name: Create Build Failure PR Comment
+        if: github.event_name == 'pull_request' && steps.docker-build.outcome == 'failure'
+        shell: bash
+        run: |
+          cat > comment.md <<'EOF'
+          ## Trivy Container Image Security Scan
+
+          ### Result
+
+          :x: **Docker image build failed.**
+
+          Trivy image scanning could not be performed because the Docker image could not be built.
+
+          Please check the Docker build logs and fix the image build before the security scan can continue.
+          EOF
+
+      - name: Comment Build Failure on PR
+        if: github.event_name == 'pull_request' && steps.docker-build.outcome == 'failure'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: trivy-container-image
+          recreate: true
+          path: comment.md
 
       - name: Run Trivy Image Scan
-        uses: aquasecurity/trivy-action@0.36.0
+        id: trivy
+        if: steps.docker-build.outcome == 'success'
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: security-scan-image:${{ github.sha }}
+          image-ref: local/securitytest:${{ github.sha }}
+          scanners: vuln
+          vuln-type: os,library
           severity: HIGH,CRITICAL
-          format: json
-          output: trivy-image-results.json
-          exit-code: '0'
           ignore-unfixed: true
+          format: json
+          output: trivy-results.json
+          exit-code: '1'
 
       - name: Upload Trivy Report
+        if: always() && steps.docker-build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: trivy-container-image-report
-          path: trivy-image-results.json
+          path: trivy-results.json
           retention-days: 30
 
       - name: Create PR Summary
-        if: github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request' && steps.docker-build.outcome == 'success'
         shell: bash
         run: |
           python3 <<'PY'
           import json
 
-          with open("trivy-image-results.json") as f:
+          with open("trivy-results.json") as f:
               data = json.load(f)
 
           findings = []
 
           for result in data.get("Results", []):
               target = result.get("Target", "")
-              result_type = result.get("Type", "")
 
-              for vuln in result.get("Vulnerabilities", []):
+              for vuln in result.get("Vulnerabilities", []) or []:
                   severity = vuln.get("Severity", "")
 
                   if severity not in ("HIGH", "CRITICAL"):
@@ -67,8 +107,7 @@ jobs:
                       "installed": vuln.get("InstalledVersion", ""),
                       "fixed": vuln.get("FixedVersion", ""),
                       "title": vuln.get("Title", ""),
-                      "target": target,
-                      "type": result_type
+                      "target": target
                   })
 
           severity_order = {
@@ -89,7 +128,7 @@ jobs:
               if total == 0:
                   f.write(
                       "### Result\n\n"
-                      "No HIGH or CRITICAL vulnerabilities were detected. "
+                      "No HIGH or CRITICAL vulnerabilities were found. "
                       ":white_check_mark:\n"
                   )
               else:
@@ -121,13 +160,25 @@ jobs:
                           f"\n> Showing **10 of {total}** findings. "
                           "See the workflow artifact for the complete Trivy report.\n"
                       )
-
           PY
 
       - name: Comment on PR
-        if: github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request' && steps.docker-build.outcome == 'success'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: trivy-container-image
           recreate: true
           path: comment.md
+
+      - name: Fail if Docker Build Failed
+        if: steps.docker-build.outcome == 'failure'
+        run: |
+          echo "Docker image build failed."
+          exit 1
+
+      - name: Fail if HIGH or CRITICAL vulnerabilities are found
+        if: steps.trivy.outcome == 'failure'
+        run: |
+          echo "HIGH or CRITICAL container image vulnerabilities were found."
+          echo "Please review the Trivy findings and remediate the affected packages."
+          exit 1
