@@ -1,0 +1,128 @@
+name: Security IaC Scan
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  trivy:
+    name: Trivy IaC Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Trivy IaC Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          format: json
+          output: trivy-results.json
+          exit-code: '0'
+
+      - name: Upload Trivy Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-iac-report
+          path: trivy-results.json
+          retention-days: 30
+
+      - name: Create PR Summary
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import json
+
+          with open("trivy-results.json") as f:
+              data = json.load(f)
+
+          findings = []
+
+          for result in data.get("Results", []):
+              target = result.get("Target", "")
+
+              for misconfig in result.get("Misconfigurations", []):
+                  severity = misconfig.get("Severity", "")
+
+                  if severity not in ("HIGH", "CRITICAL"):
+                      continue
+
+                  findings.append({
+                      "severity": severity,
+                      "id": misconfig.get("ID", ""),
+                      "title": misconfig.get("Title", ""),
+                      "target": target,
+                      "resolution": misconfig.get("Resolution", "")
+                  })
+
+          severity_order = {
+              "CRITICAL": 0,
+              "HIGH": 1
+          }
+
+          findings.sort(
+              key=lambda x: severity_order.get(x["severity"], 99)
+          )
+
+          total = len(findings)
+          top = findings[:10]
+
+          with open("comment.md", "w") as f:
+              f.write("## Trivy IaC Security Scan\n\n")
+
+              if total == 0:
+                  f.write(
+                      "### Result\n\n"
+                      "No HIGH or CRITICAL IaC findings were detected. :white_check_mark:\n"
+                  )
+              else:
+                  f.write(
+                      f"### Result\n\n"
+                      f"**{total} HIGH/CRITICAL IaC findings detected.** :warning:\n\n"
+                  )
+
+                  f.write(
+                      "| Severity | ID | Finding | Target |\n"
+                      "|---|---|---|---|\n"
+                  )
+
+                  for item in top:
+                      severity = item["severity"]
+                      vuln_id = item["id"]
+                      title = item["title"].replace("|", "\\|")
+                      target = item["target"].replace("|", "\\|")
+
+                      if len(title) > 80:
+                          title = title[:77] + "..."
+
+                      if len(target) > 60:
+                          target = "..." + target[-57:]
+
+                      f.write(
+                          f"| {severity} | `{vuln_id}` | "
+                          f"{title} | `{target}` |\n"
+                      )
+
+                  if total > 10:
+                      f.write(
+                          f"\n> Showing **10 of {total}** findings. "
+                          "See the workflow artifact for the complete Trivy report.\n"
+                      )
+
+          PY
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: trivy-iac
+          recreate: true
+          path: comment.md
